@@ -1,0 +1,14 @@
+{
+  "name": "dynamoody",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DynDNS v2 compatible endpoint for Cloudflare on AWS Lambda",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/handler.mjs"
+  }
+}

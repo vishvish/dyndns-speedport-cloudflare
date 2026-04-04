@@ -1,0 +1,55 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: DynDNS v2 -> Cloudflare bridge on AWS Lambda
+
+Parameters:
+  DynDnsAuthSecretArn:
+    Type: String
+    Description: Secrets Manager ARN containing JSON keys username and password.
+  CloudflareApiTokenSecretArn:
+    Type: String
+    Description: Secrets Manager ARN containing JSON key apiToken.
+  CloudflareZoneId:
+    Type: String
+    Description: Cloudflare Zone ID (not secret).
+  LambdaExecutionRoleArn:
+    Type: String
+    Description: (Required) IAM role ARN used by the Lambda function. Must exist before deploy.
+  AllowedHostnames:
+    Type: String
+    Default: ""
+    Description: Comma-separated allow list. Empty means any hostname in zone.
+  CloudflareProxied:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+
+Resources:
+  DynDnsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handler.handler
+      Runtime: nodejs20.x
+      Timeout: 10
+      MemorySize: 128
+      Role: !Ref LambdaExecutionRoleArn
+      Environment:
+        Variables:
+          DDNS_USERNAME: !Sub "{{resolve:secretsmanager:${DynDnsAuthSecretArn}:SecretString:username}}"
+          DDNS_PASSWORD: !Sub "{{resolve:secretsmanager:${DynDnsAuthSecretArn}:SecretString:password}}"
+          CF_API_TOKEN: !Sub "{{resolve:secretsmanager:${CloudflareApiTokenSecretArn}:SecretString:apiToken}}"
+          CF_ZONE_ID: !Ref CloudflareZoneId
+          DDNS_ALLOWED_HOSTNAMES: !Ref AllowedHostnames
+          CF_PROXIED: !Ref CloudflareProxied
+      Events:
+        DynDnsUpdate:
+          Type: HttpApi
+          Properties:
+            Path: /nic/update
+            Method: GET
+
+Outputs:
+  EndpointUrl:
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/nic/update"
+
