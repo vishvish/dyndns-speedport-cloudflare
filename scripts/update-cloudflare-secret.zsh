@@ -5,12 +5,11 @@ usage() {
   cat <<'USAGE'
 Usage: ./scripts/update-cloudflare-secret.zsh [--secret-id SECRET] [--region REGION] [--token TOKEN | --token-file FILE] [--profile PROFILE]
 
-Updates (or creates) the Secrets Manager secret that stores the Cloudflare API
-token as JSON: {"apiToken": "..."}.
+Updates (or creates) the SSM SecureString parameter that stores the Cloudflare API token.
 
 Examples:
-  aws-vault exec admin -- ./scripts/update-cloudflare-secret.zsh --region your-region --secret-id /your/secret/name --token 'NEW_TOKEN'
-  ./scripts/update-cloudflare-secret.zsh --region your-region --secret-id /your/secret/name --token-file ./token.txt
+  aws-vault exec admin -- ./scripts/update-cloudflare-secret.zsh --region your-region --secret-id /your/parameter/name --token 'NEW_TOKEN'
+  ./scripts/update-cloudflare-secret.zsh --region your-region --secret-id /your/parameter/name --token-file ./token.txt
 USAGE
 }
 
@@ -77,14 +76,14 @@ fi
 
 PAYLOAD=$(jq -c -n --arg t "$TOKEN" '{apiToken:$t}')
 
-if aws secretsmanager describe-secret --secret-id "$SECRET_ID" --region "$REGION" "${AWS_OPTS[@]}" >/dev/null 2>&1; then
-  echo "Updating secret $SECRET_ID..."
-  aws secretsmanager put-secret-value --secret-id "$SECRET_ID" --secret-string "$PAYLOAD" --region "$REGION" "${AWS_OPTS[@]}"
+if aws ssm get-parameter --name "$SECRET_ID" --with-decryption --region "$REGION" "${AWS_OPTS[@]}" >/dev/null 2>&1; then
+  echo "Updating parameter $SECRET_ID..."
+  aws ssm put-parameter --name "$SECRET_ID" --value "$TOKEN" --type SecureString --overwrite --region "$REGION" "${AWS_OPTS[@]}"
 else
-  echo "Creating secret $SECRET_ID..."
-  aws secretsmanager create-secret --name "$SECRET_ID" --secret-string "$PAYLOAD" --region "$REGION" "${AWS_OPTS[@]}"
+  echo "Creating parameter $SECRET_ID..."
+  aws ssm put-parameter --name "$SECRET_ID" --value "$TOKEN" --type SecureString --region "$REGION" "${AWS_OPTS[@]}"
 fi
 
-echo "Secret $SECRET_ID updated."
+echo "Parameter $SECRET_ID updated."
 
 exit 0

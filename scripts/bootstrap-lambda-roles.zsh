@@ -88,34 +88,6 @@ aws iam attach-role-policy \
 
 echo "Attached AWSLambdaBasicExecutionRole policy."
 
-# Inline policy for SecretsManager read
-POLICY_FILE=$(mktemp)
-cat > "$POLICY_FILE" <<JSON
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "secretsmanager:GetSecretValue",
-        "secretsmanager:DescribeSecret"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-JSON
-
-aws iam put-role-policy \
-  --role-name "$LAMBDA_ROLE_NAME" \
-  --policy-name "${STACK_NAME}-lambda-secrets-policy" \
-  --policy-document "file://$POLICY_FILE" \
-  >/dev/null
-
-rm -f "$POLICY_FILE"
-
-echo "Attached inline policy for SecretsManager read."
-
 echo ""
 echo "Lambda execution role ARN: $LAMBDA_ROLE_ARN"
 echo "Add this to your .envrc:"

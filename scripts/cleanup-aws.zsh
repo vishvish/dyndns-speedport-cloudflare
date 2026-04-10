@@ -12,10 +12,10 @@ Options:
   --region                 AWS region (default: from aws config, else us-east-1)
   --stack-name             CloudFormation stack name (default: dynamoody)
   --artifacts-bucket       SAM artifacts S3 bucket (default: <stack>-sam-artifacts-<account>-<region>)
-  --ddns-secret-name       Secrets Manager name for DynDNS (default: /dynamoody/dyndns-auth)
-  --cloudflare-secret-name Secrets Manager name for Cloudflare token (default: /dynamoody/cloudflare)
+  --ddns-secret-name       SSM SecureString parameter name for DynDNS auth (default: /dynamoody/dyndns-auth)
+  --cloudflare-secret-name SSM SecureString parameter name for Cloudflare token (default: /dynamoody/cloudflare)
   --delete-bucket          Remove the SAM artifacts S3 bucket (must be emptyable)
-  --delete-secrets         Remove the application secrets from Secrets Manager
+  --delete-parameters      Remove the application parameters from SSM Parameter Store
   --force                  Also remove IAM roles, policies and the deploy user created by bootstrap (destructive)
   --confirm                Actually perform destructive actions (default: dry-run)
   --confirm-force          Required in addition to --force to remove IAM resources
@@ -41,10 +41,10 @@ require_cmd aws
 # defaults (respect existing env vars if set)
 STACK_NAME="${STACK_NAME:-your-stack-name}"
 ARTIFACTS_BUCKET="${ARTIFACTS_BUCKET:-}"
-DDNS_SECRET_NAME="${DDNS_SECRET_NAME:-/your/ddns/secret}"
-CLOUDFLARE_SECRET_NAME="${CLOUDFLARE_SECRET_NAME:-/your/cloudflare/secret}"
+DDNS_SECRET_NAME="${DDNS_SECRET_NAME:-/your/ddns/parameter}"
+CLOUDFLARE_SECRET_NAME="${CLOUDFLARE_SECRET_NAME:-/your/cloudflare/parameter}"
 DELETE_BUCKET="${DELETE_BUCKET:-false}"
-DELETE_SECRETS="${DELETE_SECRETS:-false}"
+DELETE_PARAMETERS="${DELETE_PARAMETERS:-false}"
 FORCE="${FORCE:-false}"
 
 # Safety controls
@@ -99,8 +99,8 @@ while [[ $# -gt 0 ]]; do
       DELETE_BUCKET="true"
       shift
       ;;
-    --delete-secrets)
-      DELETE_SECRETS="true"
+    --delete-parameters)
+      DELETE_PARAMETERS="true"
       shift
       ;;
     --confirm)
@@ -221,24 +221,24 @@ if [[ "$DELETE_BUCKET" == "true" ]]; then
   fi
 fi
 
-# Remove Secrets Manager secrets (optional)
-if [[ "$DELETE_SECRETS" == "true" ]]; then
-  for secret in "$DDNS_SECRET_NAME" "$CLOUDFLARE_SECRET_NAME"; do
-    if aws secretsmanager describe-secret --region "$AWS_REGION" --secret-id "$secret" >/dev/null 2>&1; then
-      log "Secret exists: $secret"
+# Remove SSM Parameter Store parameters (optional)
+if [[ "$DELETE_PARAMETERS" == "true" ]]; then
+  for param in "$DDNS_SECRET_NAME" "$CLOUDFLARE_SECRET_NAME"; do
+    if aws ssm get-parameter --name "$param" --with-decryption --region "$AWS_REGION" >/dev/null 2>&1; then
+      log "Parameter exists: $param"
       if [[ "$DRY_RUN" == "true" ]]; then
-        log "DRY RUN: would permanently delete secret: $secret"
-        plan_action "{\"action\":\"delete-secret\",\"secret\":\"$secret\"}"
+        log "DRY RUN: would delete parameter: $param"
+        plan_action "{\"action\":\"delete-parameter\",\"parameter\":\"$param\"}"
       else
-        if ! aws secretsmanager delete-secret --region "$AWS_REGION" --secret-id "$secret" --force-delete-without-recovery; then
-          log "Failed to delete secret: $secret (permission or policy)."
+        if ! aws ssm delete-parameter --name "$param" --region "$AWS_REGION" >/dev/null 2>&1; then
+          log "Failed to delete parameter: $param (permission or policy)."
         else
-          log "Deleted secret: $secret"
+          log "Deleted parameter: $param"
         fi
-        plan_action "{\"action\":\"delete-secret-executed\",\"secret\":\"$secret\"}"
+        plan_action "{\"action\":\"delete-parameter-executed\",\"parameter\":\"$param\"}"
       fi
     else
-      echo "Secret $secret not found; skipping."
+      echo "Parameter $param not found; skipping."
     fi
   done
 fi

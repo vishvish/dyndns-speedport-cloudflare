@@ -24,7 +24,7 @@ Notes:
 
 ## Prerequisites
 
-- AWS account with IAM permissions for Lambda, API Gateway, CloudFormation, S3, and Secrets Manager
+- AWS account with IAM permissions for Lambda, API Gateway, CloudFormation, S3, and Systems Manager Parameter Store
 - AWS SAM CLI
 - Node.js 20+
 - Cloudflare API token with DNS edit permission for the target zone
@@ -52,8 +52,8 @@ export CFN_EXEC_ROLE_ARN='arn:aws:iam::123456789012:role/your-cfn-role'
 export ALLOWED_HOSTNAMES='your-hostname.example.com'
 export CF_PROXIED='false'
 
-export DDNS_SECRET_NAME='/dynamoody/dyndns-credentials'
-export CLOUDFLARE_SECRET_NAME='/dynamoody/cloudflare-api-token'
+export DDNS_SECRET_NAME='/dynamoody/dyndns-auth'
+export CLOUDFLARE_SECRET_NAME='/dynamoody/cloudflare'
 
 if [[ -f .envrc.local ]]; then
   source .envrc.local
@@ -70,26 +70,25 @@ export CF_API_TOKEN='your-cloudflare-api-token'
 
 Because `.envrc.local` contains secrets, keep it out of version control with `.gitignore`.
 
-The deploy helper reads the secret names and optional raw values from the active environment after `source .envrc`.
+The deploy helper reads the parameter names and optional raw values from the active environment after `source .envrc`.
 
 ## Secrets
 
-This app stores credentials in AWS Secrets Manager.
+This app stores credentials in AWS Systems Manager Parameter Store as SecureString values.
 
-### Default secret names
+### Default parameter names
 
 - `DDNS_SECRET_NAME` default: `/dynamoody/dyndns-auth`
 - `CLOUDFLARE_SECRET_NAME` default: `/dynamoody/cloudflare`
 
-### Secret values
+### Parameter values
 
-- DynDNS auth secret must contain:
+- DynDNS auth parameter must contain JSON with:
   - `username`
   - `password`
-- Cloudflare token secret must contain:
-  - `apiToken`
+- Cloudflare token parameter must contain the raw token string
 
-If you already have secrets, set `DDNS_SECRET_NAME` and `CLOUDFLARE_SECRET_NAME` to those names and omit the raw values.
+If you already have parameters, set `DDNS_SECRET_NAME` and `CLOUDFLARE_SECRET_NAME` to those names and omit the raw values.
 
 ## Deploy
 
@@ -104,7 +103,7 @@ source .envrc
 ./scripts/deploy.zsh
 ```
 
-This creates or updates the named secrets and bootstraps the IAM roles used by CloudFormation.
+This creates or updates the named SSM SecureString parameters and bootstraps the IAM roles used by CloudFormation.
 
 ### Using aws-vault
 

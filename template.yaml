@@ -3,12 +3,12 @@ Transform: AWS::Serverless-2016-10-31
 Description: DynDNS v2 -> Cloudflare bridge on AWS Lambda
 
 Parameters:
-  DynDnsAuthSecretArn:
+  DynDnsAuthParamName:
     Type: String
-    Description: Secrets Manager ARN containing JSON keys username and password.
-  CloudflareApiTokenSecretArn:
+    Description: SSM SecureString parameter name containing JSON keys username and password.
+  CloudflareApiTokenParamName:
     Type: String
-    Description: Secrets Manager ARN containing JSON key apiToken.
+    Description: SSM SecureString parameter name containing the Cloudflare API token.
   CloudflareZoneId:
     Type: String
     Description: Cloudflare Zone ID (not secret).
@@ -36,9 +36,8 @@ Resources:
       Role: !Ref LambdaExecutionRoleArn
       Environment:
         Variables:
-          DDNS_USERNAME: !Sub "{{resolve:secretsmanager:${DynDnsAuthSecretArn}:SecretString:username}}"
-          DDNS_PASSWORD: !Sub "{{resolve:secretsmanager:${DynDnsAuthSecretArn}:SecretString:password}}"
-          CF_API_TOKEN: !Sub "{{resolve:secretsmanager:${CloudflareApiTokenSecretArn}:SecretString:apiToken}}"
+          DDNS_AUTH_PARAM_NAME: !Ref DynDnsAuthParamName
+          CF_API_TOKEN_PARAM_NAME: !Ref CloudflareApiTokenParamName
           CF_ZONE_ID: !Ref CloudflareZoneId
           DDNS_ALLOWED_HOSTNAMES: !Ref AllowedHostnames
           CF_PROXIED: !Ref CloudflareProxied

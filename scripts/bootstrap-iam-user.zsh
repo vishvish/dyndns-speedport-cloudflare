@@ -9,12 +9,12 @@ Usage:
     [--stack-name your-stack-name] \
     [--user-name your-user-name] \
     [--artifacts-bucket your-artifacts-bucket] \
-    [--ddns-secret-name /your/ddns/secret] \
-    [--cloudflare-secret-name /your/cloudflare/secret] \
+    [--ddns-secret-name /your/ddns/parameter] \
+    [--cloudflare-secret-name /your/cloudflare/parameter] \
     [--create-access-key]
 
 Creates a least-privilege IAM deploy user for this app:
-- IAM user with policy limited to one stack, one artifacts bucket, and two secrets
+- IAM user with policy limited to one stack, one artifacts bucket, and two SSM parameters
 - CloudFormation execution role restricted to app resources
 - Optional access key pair for aws-vault
 USAGE
@@ -30,33 +30,13 @@ require_cmd() {
 
 require_cmd aws
 
-REGION="${REGION:-}"
+REGION="${REGION:-${AWS_REGION:-}}"
 STACK_NAME="${STACK_NAME:-your-stack-name}"
 USER_NAME="${USER_NAME:-your-user-name}"
 ARTIFACTS_BUCKET="${ARTIFACTS_BUCKET:-}"
-DDNS_SECRET_NAME="${DDNS_SECRET_NAME:-/your/ddns/secret}"
-CLOUDFLARE_SECRET_NAME="${CLOUDFLARE_SECRET_NAME:-/your/cloudflare/secret}"
+DDNS_SECRET_NAME="${DDNS_SECRET_NAME:-/your/ddns/parameter}"
+CLOUDFLARE_SECRET_NAME="${CLOUDFLARE_SECRET_NAME:-/your/cloudflare/parameter}"
 CREATE_ACCESS_KEY="${CREATE_ACCESS_KEY:-false}"
-
-if [[ -z "$REGION" ]]; then
-  echo "Error: --region is required" >&2
-  exit 1
-fi
-
-if [[ "$STACK_NAME" == "your-stack-name" ]]; then
-  echo "Error: STACK_NAME must be set to a real stack name" >&2
-  exit 1
-fi
-
-if [[ "$USER_NAME" == "your-user-name" ]]; then
-  echo "Error: USER_NAME must be set to a real user name" >&2
-  exit 1
-fi
-
-if [[ "$DDNS_SECRET_NAME" == "/your/ddns/secret" || "$CLOUDFLARE_SECRET_NAME" == "/your/cloudflare/secret" ]]; then
-  echo "Error: DDNS_SECRET_NAME and CLOUDFLARE_SECRET_NAME must be set to real secret names" >&2
-  exit 1
-fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -124,8 +104,8 @@ CHANGESET_ARN="arn:aws:cloudformation:${REGION}:${ACCOUNT_ID}:changeSet/*/*"
 SAM_TRANSFORM_ARN="arn:aws:cloudformation:${REGION}:aws:transform/Serverless-2016-10-31"
 S3_BUCKET_ARN="arn:aws:s3:::${ARTIFACTS_BUCKET}"
 S3_OBJECTS_ARN="arn:aws:s3:::${ARTIFACTS_BUCKET}/*"
-DDNS_SECRET_ARN_PREFIX="arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:${DDNS_SECRET_NAME}*"
-CF_SECRET_ARN_PREFIX="arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:${CLOUDFLARE_SECRET_NAME}*"
+DDNS_PARAM_ARN_PREFIX="arn:aws:ssm:${REGION}:${ACCOUNT_ID}:parameter${DDNS_SECRET_NAME}*"
+CF_PARAM_ARN_PREFIX="arn:aws:ssm:${REGION}:${ACCOUNT_ID}:parameter${CLOUDFLARE_SECRET_NAME}*"
 LAMBDA_FN_ARN_PREFIX="arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:${STACK_NAME}*"
 LOG_GROUP_ARN_PREFIX="arn:aws:logs:${REGION}:${ACCOUNT_ID}:log-group:/aws/lambda/${STACK_NAME}*"
 
@@ -277,19 +257,6 @@ put_cfn_exec_policy() {
       "Resource": "${LOG_GROUP_ARN_PREFIX}"
     },
     {
-      "Sid": "ReadDeploymentSecrets",
-      "Effect": "Allow",
-      "Action": [
-        "secretsmanager:GetSecretValue",
-        "secretsmanager:DescribeSecret"
-      ],
-      "Resource": [
-        "${DDNS_SECRET_ARN_PREFIX}",
-        "${CF_SECRET_ARN_PREFIX}"
-      ]
-    }
-    ,
-    {
       "Sid": "SamArtifactsBucket",
       "Effect": "Allow",
       "Action": [
@@ -333,6 +300,36 @@ ensure_lambda_exec_role_policies() {
     --role-name "$LAMBDA_EXEC_ROLE_NAME" \
     --policy-arn "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" \
     >/dev/null
+
+  local ssm_policy_file
+  ssm_policy_file="$(mktemp)"
+  cat > "$ssm_policy_file" <<JSON
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadAppSecureStrings",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters"
+      ],
+      "Resource": [
+        "${DDNS_PARAM_ARN_PREFIX}",
+        "${CF_PARAM_ARN_PREFIX}"
+      ]
+    }
+  ]
+}
+JSON
+
+  aws iam put-role-policy \
+    --role-name "$LAMBDA_EXEC_ROLE_NAME" \
+    --policy-name "${STACK_NAME}-lambda-ssm-policy" \
+    --policy-document "file://${ssm_policy_file}" \
+    >/dev/null
+
+  rm -f "$ssm_policy_file"
 }
 
 ensure_user() {
@@ -418,34 +415,16 @@ put_user_policy() {
       "Resource": "${S3_OBJECTS_ARN}"
     },
     {
-      "Sid": "CreateAppSecrets",
+      "Sid": "ManageAppParameters",
       "Effect": "Allow",
       "Action": [
-        "secretsmanager:CreateSecret"
-      ],
-      "Resource": "*",
-      "Condition": {
-        "ForAnyValue:StringEquals": {
-          "secretsmanager:Name": [
-            "${DDNS_SECRET_NAME}",
-            "${CLOUDFLARE_SECRET_NAME}"
-          ]
-        }
-      }
-    },
-    {
-      "Sid": "ManageExistingAppSecrets",
-      "Effect": "Allow",
-      "Action": [
-        "secretsmanager:PutSecretValue",
-        "secretsmanager:UpdateSecret",
-        "secretsmanager:DescribeSecret",
-        "secretsmanager:GetSecretValue",
-        "secretsmanager:TagResource"
+        "ssm:PutParameter",
+        "ssm:GetParameter",
+        "ssm:DeleteParameter"
       ],
       "Resource": [
-        "${DDNS_SECRET_ARN_PREFIX}",
-        "${CF_SECRET_ARN_PREFIX}"
+        "${DDNS_PARAM_ARN_PREFIX}",
+        "${CF_PARAM_ARN_PREFIX}"
       ]
     }
     ,

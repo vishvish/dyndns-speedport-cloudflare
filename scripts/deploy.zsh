@@ -17,11 +17,12 @@ Optional env vars:
   CFN_EXEC_ROLE_ARN        CloudFormation execution role ARN (recommended for least privilege)
   ALLOWED_HOSTNAMES        Comma-separated hostname allow list
   CF_PROXIED               true/false (default: false)
-  DDNS_SECRET_NAME         Secrets Manager name (default: /dynamoody/dyndns-auth)
-  CLOUDFLARE_SECRET_NAME   Secrets Manager name (default: /dynamoody/cloudflare)
-  DDNS_USERNAME            DynDNS username (optional; if provided, secret is created/updated)
-  DDNS_PASSWORD            DynDNS password (optional; if provided, secret is created/updated)
-  CF_API_TOKEN             Cloudflare API token (optional; if provided, secret is created/updated)
+  DDNS_SECRET_NAME         SSM SecureString parameter name containing JSON auth values (default: /dynamoody/dyndns-auth)
+  CLOUDFLARE_SECRET_NAME   SSM SecureString parameter name containing the Cloudflare token (default: /dynamoody/cloudflare)
+  DDNS_USERNAME            DynDNS username (optional; if provided with DDNS_PASSWORD, JSON parameter is created/updated)
+  DDNS_PASSWORD            DynDNS password (optional; if provided with DDNS_USERNAME, JSON parameter is created/updated)
+  CF_API_TOKEN             Cloudflare API token (optional; if provided, SSM parameter is created/updated)
+  SSM_KMS_KEY_ID           Optional KMS key ID or ARN for SSM SecureString encryption
 USAGE
   exit 0
 fi
@@ -44,6 +45,7 @@ require_cmd() {
 
 require_cmd aws
 require_cmd sam
+require_cmd jq
 
 STACK_NAME="${STACK_NAME:-your-stack-name}"
 AWS_REGION="${AWS_REGION:-$(aws configure get region 2>/dev/null || true)}"
@@ -53,8 +55,9 @@ CFN_EXEC_ROLE_ARN="${CFN_EXEC_ROLE_ARN:-}"
 LAMBDA_EXEC_ROLE_ARN="${LAMBDA_EXEC_ROLE_ARN:-}"
 ALLOWED_HOSTNAMES="${ALLOWED_HOSTNAMES:-}"
 CF_PROXIED="${CF_PROXIED:-false}"
-DDNS_SECRET_NAME="${DDNS_SECRET_NAME:-/your/ddns/secret}"
-CLOUDFLARE_SECRET_NAME="${CLOUDFLARE_SECRET_NAME:-/your/cloudflare/secret}"
+SSM_KMS_KEY_ID="${SSM_KMS_KEY_ID:-}"
+DDNS_SECRET_NAME="${DDNS_SECRET_NAME:-/your/ddns/parameter}"
+CLOUDFLARE_SECRET_NAME="${CLOUDFLARE_SECRET_NAME:-/your/cloudflare/parameter}"
 
 if [[ -z "$SAM_ARTIFACT_BUCKET" ]]; then
   ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
@@ -88,51 +91,48 @@ fi
 
 require_secret() {
   local name="$1"
-  if ! aws secretsmanager describe-secret --region "$AWS_REGION" --secret-id "$name" >/dev/null 2>&1; then
-    echo "Error: secret '$name' does not exist in $AWS_REGION" >&2
+  if ! aws ssm get-parameter --name "$name" --with-decryption --region "$AWS_REGION" >/dev/null 2>&1; then
+    echo "Error: parameter '$name' does not exist in $AWS_REGION" >&2
     exit 1
   fi
 }
 
-get_secret_arn() {
-  local name="$1"
-  aws secretsmanager describe-secret --region "$AWS_REGION" --secret-id "$name" --query ARN --output text
-}
+upsert_parameter() {
+  local param_name="$1"
+  local param_value="$2"
+  local kms_args=()
 
-upsert_secret() {
-  local secret_name="$1"
-  local secret_string="$2"
-
-  if aws secretsmanager describe-secret --region "$AWS_REGION" --secret-id "$secret_name" >/dev/null 2>&1; then
-    aws secretsmanager put-secret-value --region "$AWS_REGION" --secret-id "$secret_name" --secret-string "$secret_string" >/dev/null
-  else
-    aws secretsmanager create-secret --region "$AWS_REGION" --name "$secret_name" --secret-string "$secret_string" >/dev/null
+  if [[ -n "$SSM_KMS_KEY_ID" ]]; then
+    kms_args+=(--key-id "$SSM_KMS_KEY_ID")
   fi
 
-  get_secret_arn "$secret_name"
+  if aws ssm get-parameter --name "$param_name" --with-decryption --region "$AWS_REGION" >/dev/null 2>&1; then
+    aws ssm put-parameter --name "$param_name" --value "$param_value" --type SecureString --overwrite --region "$AWS_REGION" "${kms_args[@]}" >/dev/null
+  else
+    aws ssm put-parameter --name "$param_name" --value "$param_value" --type SecureString --region "$AWS_REGION" "${kms_args[@]}" >/dev/null
+  fi
 }
 
 if [[ -n "${DDNS_USERNAME:-}" || -n "${DDNS_PASSWORD:-}" ]]; then
   if [[ -z "${DDNS_USERNAME:-}" || -z "${DDNS_PASSWORD:-}" ]]; then
-    echo "Error: both DDNS_USERNAME and DDNS_PASSWORD are required when updating the DDNS secret" >&2
+    echo "Error: both DDNS_USERNAME and DDNS_PASSWORD are required when updating the DDNS parameter" >&2
     exit 1
   fi
-  DDNS_SECRET_ARN="$(upsert_secret "$DDNS_SECRET_NAME" "{\"username\":\"$DDNS_USERNAME\",\"password\":\"$DDNS_PASSWORD\"}")"
+  DDNS_SECRET_VALUE=$(jq -c -n --arg u "$DDNS_USERNAME" --arg p "$DDNS_PASSWORD" '{username:$u,password:$p}')
+  upsert_parameter "$DDNS_SECRET_NAME" "$DDNS_SECRET_VALUE"
 else
   require_secret "$DDNS_SECRET_NAME"
-  DDNS_SECRET_ARN="$(get_secret_arn "$DDNS_SECRET_NAME")"
 fi
 
 if [[ -n "${CF_API_TOKEN:-}" ]]; then
-  CF_SECRET_ARN="$(upsert_secret "$CLOUDFLARE_SECRET_NAME" "{\"apiToken\":\"$CF_API_TOKEN\"}")"
+  upsert_parameter "$CLOUDFLARE_SECRET_NAME" "$CF_API_TOKEN"
 else
   require_secret "$CLOUDFLARE_SECRET_NAME"
-  CF_SECRET_ARN="$(get_secret_arn "$CLOUDFLARE_SECRET_NAME")"
 fi
 
-echo "Using secrets manager names:"
-echo "  DDNS secret: $DDNS_SECRET_NAME -> $DDNS_SECRET_ARN"
-echo "  Cloudflare secret: $CLOUDFLARE_SECRET_NAME -> $CF_SECRET_ARN"
+echo "Using SSM SecureString parameters:"
+echo "  DDNS parameter: $DDNS_SECRET_NAME"
+echo "  Cloudflare parameter: $CLOUDFLARE_SECRET_NAME"
 
 echo "Building SAM application..."
 sam build --template-file template.yaml
@@ -145,8 +145,8 @@ deploy_args=(
   --no-confirm-changeset
   --no-fail-on-empty-changeset
   --parameter-overrides
-    DynDnsAuthSecretArn="$DDNS_SECRET_ARN"
-    CloudflareApiTokenSecretArn="$CF_SECRET_ARN"
+    DynDnsAuthParamName="$DDNS_SECRET_NAME"
+    CloudflareApiTokenParamName="$CLOUDFLARE_SECRET_NAME"
     CloudflareZoneId="$CF_ZONE_ID"
     AllowedHostnames="$ALLOWED_HOSTNAMES"
     CloudflareProxied="$CF_PROXIED"

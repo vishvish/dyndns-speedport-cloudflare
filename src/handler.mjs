@@ -1,5 +1,33 @@
 import { timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
+import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
+
+const ssmClient = new SSMClient({});
+let cachedSecrets = null;
+
+async function loadSecrets() {
+  if (cachedSecrets) return cachedSecrets;
+
+  const authParamName = process.env.DDNS_AUTH_PARAM_NAME;
+  const tokenParamName = process.env.CF_API_TOKEN_PARAM_NAME;
+
+  if (!authParamName || !tokenParamName) {
+    throw new Error("DDNS_AUTH_PARAM_NAME and CF_API_TOKEN_PARAM_NAME must be set");
+  }
+
+  const [authResult, tokenResult] = await Promise.all([
+    ssmClient.send(new GetParameterCommand({ Name: authParamName, WithDecryption: true })),
+    ssmClient.send(new GetParameterCommand({ Name: tokenParamName, WithDecryption: true }))
+  ]);
+
+  const auth = JSON.parse(authResult.Parameter.Value);
+  cachedSecrets = {
+    username: auth.username,
+    password: auth.password,
+    cfToken: tokenResult.Parameter.Value
+  };
+  return cachedSecrets;
+}
 
 const DYNDNS_SUCCESS = 200;
 
@@ -107,11 +135,10 @@ function getAllowedHostnames() {
   return set.size > 0 ? set : null;
 }
 
-async function cloudflareRequest(path, options = {}) {
-  const token = process.env.CF_API_TOKEN;
+async function cloudflareRequest(path, cfToken, options = {}) {
   const zoneId = process.env.CF_ZONE_ID;
 
-  if (!token || !zoneId) {
+  if (!cfToken || !zoneId) {
     throw new Error("CF_API_TOKEN and CF_ZONE_ID are required");
   }
 
@@ -119,7 +146,7 @@ async function cloudflareRequest(path, options = {}) {
   const response = await fetch(url, {
     ...options,
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${cfToken}`,
       "Content-Type": "application/json",
       ...(options.headers || {})
     }
@@ -134,14 +161,14 @@ async function cloudflareRequest(path, options = {}) {
   return payload.result;
 }
 
-async function getDnsRecord(hostname, type) {
+async function getDnsRecord(hostname, type, cfToken) {
   const qs = new URLSearchParams({ type, name: hostname });
-  const result = await cloudflareRequest(`/dns_records?${qs.toString()}`);
+  const result = await cloudflareRequest(`/dns_records?${qs.toString()}`, cfToken);
   return result;
 }
 
-async function createDnsRecord(hostname, type, ip, proxied) {
-  return cloudflareRequest("/dns_records", {
+async function createDnsRecord(hostname, type, ip, proxied, cfToken) {
+  return cloudflareRequest("/dns_records", cfToken, {
     method: "POST",
     body: JSON.stringify({
       type,
@@ -153,8 +180,8 @@ async function createDnsRecord(hostname, type, ip, proxied) {
   });
 }
 
-async function updateDnsRecord(id, hostname, type, ip, proxied) {
-  return cloudflareRequest(`/dns_records/${id}`, {
+async function updateDnsRecord(id, hostname, type, ip, proxied, cfToken) {
+  return cloudflareRequest(`/dns_records/${id}`, cfToken, {
     method: "PUT",
     body: JSON.stringify({
       type,
@@ -168,13 +195,16 @@ async function updateDnsRecord(id, hostname, type, ip, proxied) {
 
 export async function handler(event) {
   try {
-    const expectedUser = process.env.DDNS_USERNAME;
-    const expectedPass = process.env.DDNS_PASSWORD;
-
-    if (!expectedUser || !expectedPass) {
-      console.error("Missing DDNS_USERNAME/DDNS_PASSWORD");
+    let secrets;
+    try {
+      secrets = await loadSecrets();
+    } catch (err) {
+      console.error("Failed to load secrets from SSM", err);
       return dynResponse("911", 500);
     }
+
+    const expectedUser = secrets.username;
+    const expectedPass = secrets.password;
 
     const auth = parseBasicAuth(getHeader(event?.headers, "authorization"));
     if (
@@ -224,14 +254,14 @@ export async function handler(event) {
 
       const type = isIP(ipStr) === 6 ? "AAAA" : "A";
       try {
-        const records = await getDnsRecord(hostname, type);
+        const records = await getDnsRecord(hostname, type, secrets.cfToken);
         if (records.length > 1) {
           results.push("numhost");
           continue;
         }
 
         if (records.length === 0) {
-          await createDnsRecord(hostname, type, ipStr, proxied);
+          await createDnsRecord(hostname, type, ipStr, proxied, secrets.cfToken);
           results.push(`good ${ipStr}`);
           continue;
         }
@@ -245,7 +275,7 @@ export async function handler(event) {
           continue;
         }
 
-        await updateDnsRecord(record.id, hostname, type, ipStr, proxied);
+        await updateDnsRecord(record.id, hostname, type, ipStr, proxied, secrets.cfToken);
         results.push(`good ${ipStr}`);
       } catch (err) {
         console.error("Update failed for", ipStr, err);
