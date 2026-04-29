@@ -5,13 +5,13 @@
   "description": "DynDNS v2 compatible endpoint for Cloudflare on AWS Lambda",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
     "test": "node --test",
     "check": "node --check src/handler.mjs"
   },
   "dependencies": {
-    "@aws-sdk/client-ssm": "^3"
+    "@aws-sdk/client-ssm": "^3.1038.0"
   }
 }

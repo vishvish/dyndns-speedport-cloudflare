@@ -30,7 +30,7 @@ Resources:
     Properties:
       CodeUri: .
       Handler: src/handler.handler
-      Runtime: nodejs20.x
+      Runtime: nodejs24.x
       Timeout: 10
       MemorySize: 128
       Role: !Ref LambdaExecutionRoleArn
@@ -51,4 +51,3 @@ Resources:
 Outputs:
   EndpointUrl:
     Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/nic/update"
-

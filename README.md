@@ -26,7 +26,7 @@ Notes:
 
 - AWS account with IAM permissions for Lambda, API Gateway, CloudFormation, S3, and Systems Manager Parameter Store
 - AWS SAM CLI
-- Node.js 20+
+- Node.js 24+
 - Cloudflare API token with DNS edit permission for the target zone
 - Optional: `aws-vault` for secure AWS credential management and profile-based deployment
 
