@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-
-import { handler } from "../src/handler.mjs";
+import { SSMClient } from "@aws-sdk/client-ssm";
 
 const ORIGINAL_ENV = { ...process.env };
 const ORIGINAL_FETCH = global.fetch;
 const ORIGINAL_CONSOLE_ERROR = console.error;
+const ORIGINAL_SSM_SEND = SSMClient.prototype.send;
 
 function makeAuth(username = "user", password = "pass") {
   return `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}`;
@@ -30,12 +30,41 @@ function baseEvent(overrides = {}) {
 }
 
 function setBaseEnv() {
-  process.env.DDNS_USERNAME = "user";
-  process.env.DDNS_PASSWORD = "pass";
+  process.env.DDNS_AUTH_PARAM_NAME = "/dynamoody/ddns-auth";
+  process.env.CF_API_TOKEN_PARAM_NAME = "/dynamoody/cloudflare";
   process.env.CF_API_TOKEN = "token";
   process.env.CF_ZONE_ID = "zone";
   delete process.env.DDNS_ALLOWED_HOSTNAMES;
   delete process.env.CF_PROXIED;
+}
+
+function loadHandler() {
+  return import(`../src/handler.mjs?test=${Date.now()}-${Math.random()}`);
+}
+
+function mockSecrets({
+  username = "user",
+  password = "pass",
+  cfToken = "token"
+} = {}) {
+  SSMClient.prototype.send = async (command) => {
+    const name = command?.input?.Name;
+    if (name === process.env.DDNS_AUTH_PARAM_NAME) {
+      return {
+        Parameter: {
+          Value: JSON.stringify({ username, password })
+        }
+      };
+    }
+    if (name === process.env.CF_API_TOKEN_PARAM_NAME) {
+      return {
+        Parameter: {
+          Value: cfToken
+        }
+      };
+    }
+    throw new Error(`Unexpected SSM parameter: ${name}`);
+  };
 }
 
 function cfOk(result) {
@@ -60,6 +89,7 @@ function useFetchResponses(responses) {
 test.beforeEach(() => {
   process.env = { ...ORIGINAL_ENV };
   setBaseEnv();
+  mockSecrets();
   global.fetch = ORIGINAL_FETCH;
   console.error = () => {};
 });
@@ -68,10 +98,22 @@ test.after(() => {
   process.env = ORIGINAL_ENV;
   global.fetch = ORIGINAL_FETCH;
   console.error = ORIGINAL_CONSOLE_ERROR;
+  SSMClient.prototype.send = ORIGINAL_SSM_SEND;
 });
 
 test("returns 911 if DDNS credentials are missing", async () => {
-  delete process.env.DDNS_USERNAME;
+  delete process.env.DDNS_AUTH_PARAM_NAME;
+  const { handler } = await loadHandler();
+  const response = await handler(baseEvent());
+
+  assert.equal(response.statusCode, 500);
+  assert.equal(response.body.trim(), "911");
+});
+
+test("returns 911 if SSM parameter names are missing", async () => {
+  delete process.env.DDNS_AUTH_PARAM_NAME;
+  delete process.env.CF_API_TOKEN_PARAM_NAME;
+  const { handler } = await loadHandler();
   const response = await handler(baseEvent());
 
   assert.equal(response.statusCode, 500);
@@ -79,6 +121,7 @@ test("returns 911 if DDNS credentials are missing", async () => {
 });
 
 test("returns badauth when basic auth is invalid", async () => {
+  const { handler } = await loadHandler();
   const response = await handler(
     baseEvent({ headers: { authorization: makeAuth("user", "wrong") } })
   );
@@ -89,6 +132,7 @@ test("returns badauth when basic auth is invalid", async () => {
 });
 
 test("returns notfqdn when hostname is missing", async () => {
+  const { handler } = await loadHandler();
   const response = await handler(
     baseEvent({ queryStringParameters: { myip: "203.0.113.42" } })
   );
@@ -98,6 +142,7 @@ test("returns notfqdn when hostname is missing", async () => {
 });
 
 test("returns numhost when multiple hostnames are provided", async () => {
+  const { handler } = await loadHandler();
   const response = await handler(
     baseEvent({
       queryStringParameters: {
@@ -113,7 +158,7 @@ test("returns numhost when multiple hostnames are provided", async () => {
 
 test("returns nohost when hostname is not in allow list", async () => {
   process.env.DDNS_ALLOWED_HOSTNAMES = "router.example.com";
-
+  const { handler } = await loadHandler();
   const response = await handler(baseEvent());
 
   assert.equal(response.statusCode, 200);
@@ -121,6 +166,7 @@ test("returns nohost when hostname is not in allow list", async () => {
 });
 
 test("returns dnserr when myip and source ip are invalid", async () => {
+  const { handler } = await loadHandler();
   const response = await handler(
     baseEvent({
       queryStringParameters: {
@@ -136,6 +182,7 @@ test("returns dnserr when myip and source ip are invalid", async () => {
 });
 
 test("creates DNS record and returns good when record does not exist", async () => {
+  const { handler } = await loadHandler();
   const calls = useFetchResponses([cfOk([]), cfOk({ id: "new-id" })]);
 
   const response = await handler(baseEvent());
@@ -149,6 +196,7 @@ test("creates DNS record and returns good when record does not exist", async () 
 });
 
 test("falls back to sourceIp when myip is omitted", async () => {
+  const { handler } = await loadHandler();
   useFetchResponses([
     cfOk([
       {
@@ -168,6 +216,7 @@ test("falls back to sourceIp when myip is omitted", async () => {
 });
 
 test("uses AAAA type when updating an IPv6 address", async () => {
+  const { handler } = await loadHandler();
   const calls = useFetchResponses([cfOk([]), cfOk({ id: "new-ipv6" })]);
 
   const response = await handler(
@@ -189,6 +238,7 @@ test("uses AAAA type when updating an IPv6 address", async () => {
 });
 
 test("returns nochg when existing record content matches", async () => {
+  const { handler } = await loadHandler();
   useFetchResponses([
     cfOk([
       {
@@ -206,6 +256,7 @@ test("returns nochg when existing record content matches", async () => {
 });
 
 test("updates DNS record and returns good when content changes", async () => {
+  const { handler } = await loadHandler();
   const calls = useFetchResponses([
     cfOk([
       {
@@ -227,6 +278,7 @@ test("updates DNS record and returns good when content changes", async () => {
 });
 
 test("returns 911 when Cloudflare API fails", async () => {
+  const { handler } = await loadHandler();
   useFetchResponses([
     {
       ok: false,

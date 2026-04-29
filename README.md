@@ -182,6 +182,8 @@ node --check src/handler.mjs
 npm test
 ```
 
+The unit tests mock AWS Systems Manager Parameter Store and expect `DDNS_AUTH_PARAM_NAME` and `CF_API_TOKEN_PARAM_NAME` to be set, matching the Lambda handler contract.
+
 ## Notes
 
 - If `myip` is omitted, the handler falls back to the request source IP.
